@@ -1,0 +1,7 @@
+PyQt6>=6.4.0
+birefnet>=1.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+pillow>=9.0.0
+pytoshop>=1.2.0
+pytest>=7.0.0
