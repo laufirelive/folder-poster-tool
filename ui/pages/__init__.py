@@ -1,4 +1,5 @@
 # Make modules packages
 from ui.pages.materials_page import MaterialsPage
+from ui.pages.matting_page import MattingPage, MattingRowStatus
 
-__all__ = ["MaterialsPage"]
+__all__ = ["MaterialsPage", "MattingPage", "MattingRowStatus"]
