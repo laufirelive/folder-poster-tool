@@ -1,16 +1,21 @@
 import os
+import threading
 import uuid
 
+from PyQt6.QtCore import QThread
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from core.extractor import extract_preview_frames
+from core.material_paths import resolve_material_raster_path
 from core.scanner import scan_directory
 from core.state_manager import StateManager
-from models import Material, ProjectState
+from models import Material, MatteRecord, ProjectState
 from ui.pages.home_page import HomePage
+from ui.pages.matting_page import MattingPage, MattingRowStatus
 from ui.pages.materials_page import MaterialsPage
 from ui.widgets.video_frames_modal import VideoFramesModal
+from ui.workers.matting_worker import MattingWorker
 
 
 class MainWindow(QMainWindow):
@@ -22,6 +27,15 @@ class MainWindow(QMainWindow):
         self._state_manager = StateManager()
         self._project_state: ProjectState | None = None
         self._materials_page: MaterialsPage | None = None
+        self._matting_page: MattingPage | None = None
+
+        self._matting_thread: QThread | None = None
+        self._matting_worker: MattingWorker | None = None
+        self._cancel_event: threading.Event | None = None
+        self._matting_records: list[MatteRecord] = []
+        self._matting_row_data: list[tuple[str, str, Material]] = []
+        self._matting_total: int = 0
+        self._matting_cancel_requested: bool = False
 
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
@@ -56,6 +70,7 @@ class MainWindow(QMainWindow):
             self._materials_page = MaterialsPage(state, self)
             self._materials_page.image_toggle_requested.connect(self._on_image_toggle)
             self._materials_page.video_pick_requested.connect(self._on_video_pick)
+            self._materials_page.next_requested.connect(self._on_materials_next)
             self.stacked_widget.addWidget(self._materials_page)
         else:
             self._materials_page.set_state(state)
@@ -107,3 +122,129 @@ class MainWindow(QMainWindow):
         self._state_manager.save_state(self._project_state)
         if self._materials_page is not None:
             self._materials_page.set_state(self._project_state)
+
+    def _on_materials_next(self) -> None:
+        if self._project_state is None:
+            return
+        selected = [m for m in self._project_state.selected_materials if m.selected]
+        if not selected:
+            QMessageBox.warning(self, "提示", "请先选择至少一个素材。")
+            return
+
+        base = self._state_manager.base_dir
+        row_work: list[tuple[str, str, Material]] = []
+        missing_labels: list[str] = []
+
+        for m in selected:
+            rpath = resolve_material_raster_path(base, self._project_state, m)
+            sf = next((f for f in self._project_state.scanned_files if f.source_id == m.source_id), None)
+            if rpath is None or sf is None:
+                label = sf.name if sf else m.source_id
+                missing_labels.append(label)
+                continue
+            display = sf.name
+            if m.frame_idx is not None:
+                display = f"{sf.name} · 帧 {m.frame_idx + 1}"
+            row_work.append((display, rpath, m))
+
+        if missing_labels:
+            QMessageBox.warning(
+                self,
+                "缺少预览文件",
+                "以下素材缺少可用的源图或视频帧，请先完成选择：\n"
+                + "\n".join(missing_labels),
+            )
+            return
+
+        if not row_work:
+            return
+
+        self._project_state.current_step = "matting"
+        self._state_manager.save_state(self._project_state)
+
+        if self._matting_page is not None:
+            self.stacked_widget.removeWidget(self._matting_page)
+            self._matting_page.deleteLater()
+            self._matting_page = None
+
+        specs = [(d, p, (mat.source_id, mat.frame_idx)) for d, p, mat in row_work]
+        self._matting_page = MattingPage(self._project_state, specs, self)
+        self._matting_page.cancel_requested.connect(self._on_matting_cancel)
+        self.stacked_widget.addWidget(self._matting_page)
+        self.stacked_widget.setCurrentWidget(self._matting_page)
+
+        self._matting_row_data = row_work
+        self._matting_total = len(row_work)
+        self._matting_records = []
+        self._matting_cancel_requested = False
+        self._cancel_event = threading.Event()
+
+        self._matting_thread = QThread()
+        self._matting_worker = MattingWorker(
+            row_work,
+            self._state_manager.base_dir,
+            self._project_state.project_id,
+            self._cancel_event,
+        )
+        self._matting_worker.moveToThread(self._matting_thread)
+        self._matting_thread.started.connect(self._matting_worker.run)
+        self._matting_worker.progress.connect(self._on_matting_progress)
+        self._matting_worker.row_done.connect(self._on_matting_row_done)
+        self._matting_worker.finished.connect(self._on_matting_worker_finished)
+        self._matting_worker.finished.connect(self._matting_thread.quit)
+        self._matting_worker.finished.connect(self._matting_worker.deleteLater)
+        self._matting_thread.finished.connect(self._on_matting_thread_finished)
+        self._matting_thread.start()
+
+    def _on_matting_progress(self, index: int, total: int, _source_path: str, name: str) -> None:
+        if self._matting_page is None:
+            return
+        self._matting_page.set_row_status(index, MattingRowStatus.RUNNING)
+        pct = int(100 * index / total) if total else 0
+        self._matting_page.set_overall_progress(pct)
+        self._matting_page.set_current_label(name, (total - index, total))
+
+    def _on_matting_row_done(self, index: int, matte_path: str, ok: bool, err: str) -> None:
+        if self._matting_page is None:
+            return
+        total = self._matting_total
+        if ok:
+            self._matting_page.set_row_status(index, MattingRowStatus.DONE, matte_path)
+            if 0 <= index < len(self._matting_row_data):
+                _name, src_path, mat = self._matting_row_data[index]
+                mtime = os.path.getmtime(src_path)
+                self._matting_records.append(
+                    MatteRecord(
+                        source_id=mat.source_id,
+                        source_mtime=mtime,
+                        matte_path=matte_path,
+                        is_active=True,
+                    )
+                )
+        else:
+            self._matting_page.set_row_status(index, MattingRowStatus.ERROR, None)
+        pct = int(100 * (index + 1) / total) if total else 100
+        self._matting_page.set_overall_progress(pct)
+
+    def _on_matting_cancel(self) -> None:
+        if self._matting_thread is None or not self._matting_thread.isRunning():
+            return
+        self._matting_cancel_requested = True
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
+    def _on_matting_worker_finished(self) -> None:
+        if self._project_state is not None:
+            self._project_state.matte_map = list(self._matting_records)
+            self._state_manager.save_state(self._project_state)
+        if self._matting_cancel_requested and self._project_state is not None:
+            self._project_state.current_step = "materials"
+            self._state_manager.save_state(self._project_state)
+            if self._materials_page is not None:
+                self._materials_page.set_state(self._project_state)
+            self.stacked_widget.setCurrentWidget(self._materials_page)
+        self._matting_worker = None
+
+    def _on_matting_thread_finished(self) -> None:
+        self._matting_thread = None
+        self._cancel_event = None

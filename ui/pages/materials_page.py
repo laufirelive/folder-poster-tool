@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -17,6 +18,7 @@ from models import ProjectState
 class MaterialsPage(QWidget):
     image_toggle_requested = pyqtSignal(str, bool)
     video_pick_requested = pyqtSignal(str)
+    next_requested = pyqtSignal()
 
     def __init__(self, project_state: ProjectState, parent=None):
         super().__init__(parent)
@@ -30,8 +32,16 @@ class MaterialsPage(QWidget):
         self._grid_layout.setSpacing(12)
         self._scroll.setWidget(self._container)
 
+        self._next_btn = QPushButton("下一步", self)
+        self._next_btn.clicked.connect(self.next_requested.emit)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(self._next_btn)
+
         outer = QVBoxLayout(self)
         outer.addWidget(self._scroll)
+        outer.addLayout(footer)
         self._rebuild_grid()
 
     def set_state(self, state: ProjectState) -> None:
@@ -114,3 +124,6 @@ class MaterialsPage(QWidget):
                 v.addWidget(btn)
 
             self._grid_layout.addWidget(card, i // cols, i % cols)
+
+        n_selected = len([m for m in self._state.selected_materials if m.selected])
+        self._next_btn.setEnabled(n_selected >= 1)
