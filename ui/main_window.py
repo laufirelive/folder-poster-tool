@@ -2,8 +2,8 @@ import os
 import threading
 import uuid
 
-from PyQt6.QtCore import QThread
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QThread, QUrl
+from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import QDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from core.extractor import extract_preview_frames
@@ -11,11 +11,13 @@ from core.material_paths import resolve_material_raster_path
 from core.scanner import scan_directory
 from core.state_manager import StateManager
 from models import Material, MatteRecord, ProjectState
+from ui.pages.export_page import ExportPage
 from ui.pages.home_page import HomePage
 from ui.pages.matting_page import MattingPage, MattingRowStatus
 from ui.pages.materials_page import MaterialsPage
 from ui.widgets.video_frames_modal import VideoFramesModal
 from ui.workers.matting_worker import MattingWorker
+from ui.workers.psd_export_worker import PsdExportWorker
 
 
 class MainWindow(QMainWindow):
@@ -28,6 +30,7 @@ class MainWindow(QMainWindow):
         self._project_state: ProjectState | None = None
         self._materials_page: MaterialsPage | None = None
         self._matting_page: MattingPage | None = None
+        self._export_page: ExportPage | None = None
 
         self._matting_thread: QThread | None = None
         self._matting_worker: MattingWorker | None = None
@@ -36,6 +39,10 @@ class MainWindow(QMainWindow):
         self._matting_row_data: list[tuple[str, str, Material]] = []
         self._matting_total: int = 0
         self._matting_cancel_requested: bool = False
+
+        self._psd_thread: QThread | None = None
+        self._psd_worker: PsdExportWorker | None = None
+        self._pending_psd_export_path: str | None = None
 
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
@@ -243,8 +250,72 @@ class MainWindow(QMainWindow):
             if self._materials_page is not None:
                 self._materials_page.set_state(self._project_state)
             self.stacked_widget.setCurrentWidget(self._materials_page)
+        elif self._project_state is not None and not self._matting_cancel_requested:
+            self._project_state.current_step = "export"
+            self._state_manager.save_state(self._project_state)
+            self._ensure_export_page()
+            self.stacked_widget.setCurrentWidget(self._export_page)
         self._matting_worker = None
 
     def _on_matting_thread_finished(self) -> None:
         self._matting_thread = None
         self._cancel_event = None
+
+    def _ensure_export_page(self) -> None:
+        assert self._project_state is not None
+        if self._export_page is None:
+            self._export_page = ExportPage(self._project_state, self)
+            self._export_page.export_requested.connect(self._on_export_requested)
+            self._export_page.back_requested.connect(self._on_export_back)
+            self.stacked_widget.addWidget(self._export_page)
+        else:
+            self._export_page.set_state(self._project_state)
+
+    def _on_export_back(self) -> None:
+        if self._project_state is None:
+            return
+        self._project_state.current_step = "matting"
+        self._state_manager.save_state(self._project_state)
+        if self._matting_page is not None:
+            self.stacked_widget.setCurrentWidget(self._matting_page)
+
+    def _on_export_requested(self, path: str, width: int, height: int) -> None:
+        if self._project_state is None:
+            return
+        if self._psd_thread is not None and self._psd_thread.isRunning():
+            QMessageBox.information(self, "请稍候", "正在导出 PSD…")
+            return
+        self._pending_psd_export_path = path
+        self._psd_thread = QThread()
+        self._psd_worker = PsdExportWorker(
+            self._project_state.matte_map,
+            width,
+            height,
+            path,
+        )
+        self._psd_worker.moveToThread(self._psd_thread)
+        self._psd_thread.started.connect(self._psd_worker.run)
+        self._psd_worker.finished_ok.connect(self._on_psd_export_ok)
+        self._psd_worker.finished_err.connect(self._on_psd_export_err)
+        self._psd_worker.finished_ok.connect(self._psd_thread.quit)
+        self._psd_worker.finished_err.connect(self._psd_thread.quit)
+        self._psd_worker.finished_ok.connect(self._psd_worker.deleteLater)
+        self._psd_worker.finished_err.connect(self._psd_worker.deleteLater)
+        self._psd_thread.finished.connect(self._on_psd_thread_finished_export)
+        self._psd_thread.start()
+
+    def _on_psd_export_ok(self) -> None:
+        path = self._pending_psd_export_path
+        self._pending_psd_export_path = None
+        QMessageBox.information(self, "导出成功", "PSD 已保存。")
+        if path:
+            folder = os.path.dirname(path)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _on_psd_export_err(self, err: str) -> None:
+        self._pending_psd_export_path = None
+        QMessageBox.critical(self, "导出失败", err)
+
+    def _on_psd_thread_finished_export(self) -> None:
+        self._psd_thread = None
+        self._psd_worker = None
