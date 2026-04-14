@@ -31,6 +31,12 @@ def test_scan_directory(tmp_path):
     # Test image mode
     images = scan_directory(str(tmp_path), mode="image", max_depth=3)
     assert len(images) == 2
+    by_path = {f.path: f.source_id for f in images}
+    for sid in by_path.values():
+        assert len(sid) == 16
+    again = scan_directory(str(tmp_path), mode="image", max_depth=3)
+    for f in again:
+        assert f.source_id == by_path[f.path]
     assert all(f.type == "image" for f in images)
     assert any("img1.jpg" in f.name for f in images)
 

@@ -6,6 +6,7 @@ class ScannedFile:
     path: str
     name: str
     type: str
+    source_id: str = ""
 
 @dataclass
 class Material:
