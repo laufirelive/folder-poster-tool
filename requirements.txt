@@ -1,5 +1,6 @@
 PyQt6>=6.4.0
-birefnet>=1.0.0
+# BiRefNet: use Hugging Face weights + transformers (see core/birefnet.py). Optional: accelerate, timm — add only if model load fails.
+transformers>=4.38.0
 torch>=2.0.0
 torchvision>=0.15.0
 pillow>=9.0.0
