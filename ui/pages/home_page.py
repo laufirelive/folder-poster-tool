@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit,
                              QPushButton, QRadioButton, QSpinBox,
-                             QHBoxLayout, QButtonGroup)
+                             QHBoxLayout, QButtonGroup, QFileDialog)
 
 
 class HomePage(QWidget):
@@ -24,6 +24,7 @@ class HomePage(QWidget):
         browse_btn = QPushButton("浏览")
         path_layout.addWidget(self.path_input)
         path_layout.addWidget(browse_btn)
+        browse_btn.clicked.connect(self._browse_folder)
         layout.addLayout(path_layout)
 
         # Mode Selection
@@ -59,6 +60,11 @@ class HomePage(QWidget):
         layout.addWidget(self.start_btn)
 
         layout.addStretch()
+
+    def _browse_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "选择文件夹")
+        if d:
+            self.path_input.setText(d)
 
     def on_start(self):
         path = self.path_input.text()
