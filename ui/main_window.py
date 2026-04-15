@@ -85,11 +85,15 @@ class MainWindow(QMainWindow):
             self._materials_page.image_toggle_requested.connect(self._on_image_toggle)
             self._materials_page.video_pick_requested.connect(self._on_video_pick)
             self._materials_page.next_requested.connect(self._on_materials_next)
+            self._materials_page.back_requested.connect(self._on_materials_back)
             self.stacked_widget.addWidget(self._materials_page)
         else:
             self._materials_page.set_state(state)
 
         self.stacked_widget.setCurrentWidget(self._materials_page)
+
+    def _on_materials_back(self) -> None:
+        self.stacked_widget.setCurrentWidget(self.home_page)
 
     def _on_image_toggle(self, source_id: str, selected: bool) -> None:
         if self._project_state is None:

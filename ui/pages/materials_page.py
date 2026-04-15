@@ -22,6 +22,7 @@ class MaterialsPage(QWidget):
     image_toggle_requested = pyqtSignal(str, bool)
     video_pick_requested = pyqtSignal(str)
     next_requested = pyqtSignal()
+    back_requested = pyqtSignal()
 
     def __init__(self, project_state: ProjectState, parent=None):
         super().__init__(parent)
@@ -77,18 +78,74 @@ class MaterialsPage(QWidget):
         self._grid_layout.setContentsMargins(20, 20, 20, 20)
         self._scroll.setWidget(self._container)
 
-        self._next_btn = QPushButton("下一步", self)
+        # Header
+        header_layout = QHBoxLayout()
+        self._back_btn = QPushButton("← 返回")
+        self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._back_btn.clicked.connect(self.back_requested.emit)
+        self._back_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #007bff;
+                font-weight: bold;
+                font-size: 14px;
+                border: none;
+            }
+            QPushButton:hover {
+                text-decoration: underline;
+            }
+        """)
+
+        title_label = QLabel("Folder Poster")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+
+        self._next_btn = QPushButton("下一步")
         self._next_btn.setObjectName("NextButton")
         self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.clicked.connect(self.next_requested.emit)
 
-        footer = QHBoxLayout()
-        footer.addStretch()
-        footer.addWidget(self._next_btn)
+        header_layout.addWidget(self._back_btn)
+        header_layout.addStretch()
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self._next_btn)
+
+        # Stats Label
+        file_type_str = "视频" if self._state.mode == "video" else "图片"
+        self._stats_label = QLabel(f"已找到 {len(self._state.scanned_files)} 个{file_type_str}文件（递归 {self._state.depth} 层）")
+        self._stats_label.setStyleSheet("font-size: 14px; color: #555;")
+
+        # Toolbar (View controls)
+        toolbar_layout = QHBoxLayout()
+        view_btn = QPushButton("瀑布流 ▼")
+        view_btn.setEnabled(False)
+        size_lbl = QLabel("大小: ████████░░")
+        size_lbl.setStyleSheet("color: #888;")
+        toolbar_layout.addWidget(view_btn)
+        toolbar_layout.addSpacing(10)
+        toolbar_layout.addWidget(size_lbl)
+        toolbar_layout.addStretch()
+
+        # Footer
+        self._footer_label = QLabel("已选素材: 0")
+        self._footer_label.setStyleSheet("font-size: 14px; color: #333; font-weight: bold;")
+        
+        footer_layout = QHBoxLayout()
+        footer_layout.addWidget(self._footer_label)
+        footer_layout.addStretch()
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.addLayout(header_layout)
+        outer.addSpacing(10)
+        outer.addWidget(self._stats_label)
+        outer.addSpacing(5)
+        outer.addLayout(toolbar_layout)
+        outer.addSpacing(10)
         outer.addWidget(self._scroll)
-        outer.addLayout(footer)
+        outer.addSpacing(10)
+        outer.addLayout(footer_layout)
 
         self._start_thumbnail_worker()
         self._rebuild_grid()
@@ -227,6 +284,12 @@ class MaterialsPage(QWidget):
 
         n_selected = len([m for m in self._state.selected_materials if m.selected])
         self._next_btn.setEnabled(n_selected >= 1)
+
+        if self._state.mode == "video":
+            vid_ids = {scanned_file_source_id_for_material(m) for m in self._state.selected_materials if m.selected}
+            self._footer_label.setText(f"已选素材: {n_selected} 帧（来自 {len(vid_ids)} 个视频）")
+        else:
+            self._footer_label.setText(f"已选素材: {n_selected} 张")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
