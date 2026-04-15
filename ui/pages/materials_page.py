@@ -147,7 +147,8 @@ class MaterialsPage(QWidget):
             item = self._grid_layout.takeAt(0)
             w = item.widget()
             if w is not None and not sip.isdeleted(w):
-                sip.delete(w)
+                w.setParent(None)
+                w.deleteLater()
 
     def _rebuild_grid(self) -> None:
         self._clear_grid()

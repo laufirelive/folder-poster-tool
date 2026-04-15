@@ -293,6 +293,7 @@ class MainWindow(QMainWindow):
         self._matting_worker.finished.connect(self._on_matting_worker_finished)
         self._matting_worker.finished.connect(self._matting_thread.quit)
         self._matting_worker.finished.connect(self._matting_worker.deleteLater)
+        self._matting_thread.finished.connect(self._matting_thread.deleteLater)
         self._matting_thread.finished.connect(self._on_matting_thread_finished)
         self._matting_thread.start()
         self._matting_page.set_worker_running(True)
