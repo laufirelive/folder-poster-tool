@@ -68,7 +68,13 @@ def test_resolve_video_frame(tmp_path):
             )
         ],
     )
-    m = Material(source_id=sid, frame_idx=2, selected=True)
+    from models import material_source_id_for_video
+
+    m = Material(
+        source_id=material_source_id_for_video(sid, 2),
+        frame_idx=2,
+        selected=True,
+    )
     got = resolve_material_raster_path(str(base), state, m)
     assert os.path.abspath(got) == os.path.abspath(str(frame_path))
 
@@ -92,5 +98,11 @@ def test_resolve_video_missing_frame_returns_none(tmp_path):
             )
         ],
     )
-    m = Material(source_id="s", frame_idx=0, selected=True)
+    from models import material_source_id_for_video
+
+    m = Material(
+        source_id=material_source_id_for_video("s", 0),
+        frame_idx=0,
+        selected=True,
+    )
     assert resolve_material_raster_path(str(base), state, m) is None

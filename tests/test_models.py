@@ -1,5 +1,28 @@
 import pytest
-from models import ProjectState, ScannedFile, Material
+from models import (
+    Material,
+    ProjectState,
+    ScannedFile,
+    material_source_id_for_video,
+    scanned_file_source_id_for_material,
+)
+
+
+def test_material_source_id_for_video_suffix():
+    assert material_source_id_for_video("abc123", 0) == "abc123_frame_00"
+    assert material_source_id_for_video("abc123", 5) == "abc123_frame_05"
+    assert material_source_id_for_video("abc123", 31) == "abc123_frame_31"
+
+
+def test_scanned_file_source_id_for_image_material():
+    m = Material(source_id="hash_only", frame_idx=None, selected=True)
+    assert scanned_file_source_id_for_material(m) == "hash_only"
+
+
+def test_scanned_file_source_id_for_video_material_strips_frame_suffix():
+    m = Material(source_id="vid01_frame_02", frame_idx=2, selected=True)
+    assert scanned_file_source_id_for_material(m) == "vid01"
+
 
 def test_project_state_initialization():
     state = ProjectState(project_id="test_1", input_path="/tmp", mode="video")

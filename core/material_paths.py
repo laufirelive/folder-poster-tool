@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from models import Material, ProjectState
+from models import Material, ProjectState, scanned_file_source_id_for_material
 
 
 def resolve_material_raster_path(base_dir: str, state: ProjectState, m: Material) -> str | None:
@@ -15,7 +15,8 @@ def resolve_material_raster_path(base_dir: str, state: ProjectState, m: Material
     - Video materials: extracted preview frame ``frame_{frame_idx+1:03d}.png`` under
       ``base_dir / project_id / previews / source_id /``.
     """
-    sf = next((f for f in state.scanned_files if f.source_id == m.source_id), None)
+    base_sid = scanned_file_source_id_for_material(m)
+    sf = next((f for f in state.scanned_files if f.source_id == base_sid), None)
     if sf is None:
         return None
     if sf.type == "image":
@@ -29,7 +30,7 @@ def resolve_material_raster_path(base_dir: str, state: ProjectState, m: Material
             os.path.expanduser(base_dir),
             state.project_id,
             "previews",
-            m.source_id,
+            base_sid,
             f"frame_{frame_n:03d}.png",
         )
         p = os.path.abspath(p)

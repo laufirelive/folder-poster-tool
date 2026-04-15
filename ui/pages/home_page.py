@@ -56,10 +56,15 @@ class HomePage(QWidget):
 
         # Start Button
         self.start_btn = QPushButton("开始扫描")
+        self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.on_start)
+        self.path_input.textChanged.connect(self._update_start_button_enabled)
         layout.addWidget(self.start_btn)
 
         layout.addStretch()
+
+    def _update_start_button_enabled(self, _text: str) -> None:
+        self.start_btn.setEnabled(bool(self.path_input.text().strip()))
 
     def _browse_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择文件夹")

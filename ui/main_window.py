@@ -10,7 +10,13 @@ from core.extractor import extract_preview_frames
 from core.material_paths import resolve_material_raster_path
 from core.scanner import scan_directory
 from core.state_manager import StateManager
-from models import Material, MatteRecord, ProjectState
+from models import (
+    Material,
+    MatteRecord,
+    ProjectState,
+    material_source_id_for_video,
+    scanned_file_source_id_for_material,
+)
 from ui.pages.export_page import ExportPage
 from ui.pages.home_page import HomePage
 from ui.pages.matting_page import MattingPage, MattingRowStatus
@@ -87,7 +93,11 @@ class MainWindow(QMainWindow):
     def _on_image_toggle(self, source_id: str, selected: bool) -> None:
         if self._project_state is None:
             return
-        mats = [m for m in self._project_state.selected_materials if m.source_id != source_id]
+        mats = [
+            m
+            for m in self._project_state.selected_materials
+            if scanned_file_source_id_for_material(m) != source_id
+        ]
         if selected:
             mats.append(Material(source_id=source_id, frame_idx=None, selected=True))
         self._project_state.selected_materials = mats
@@ -123,8 +133,18 @@ class MainWindow(QMainWindow):
             return
 
         idx = modal.selected_frame_index()
-        mats = [m for m in self._project_state.selected_materials if m.source_id != source_id]
-        mats.append(Material(source_id=source_id, frame_idx=idx, selected=True))
+        mats = [
+            m
+            for m in self._project_state.selected_materials
+            if scanned_file_source_id_for_material(m) != source_id
+        ]
+        mats.append(
+            Material(
+                source_id=material_source_id_for_video(source_id, idx),
+                frame_idx=idx,
+                selected=True,
+            )
+        )
         self._project_state.selected_materials = mats
         self._state_manager.save_state(self._project_state)
         if self._materials_page is not None:
@@ -144,7 +164,14 @@ class MainWindow(QMainWindow):
 
         for m in selected:
             rpath = resolve_material_raster_path(base, self._project_state, m)
-            sf = next((f for f in self._project_state.scanned_files if f.source_id == m.source_id), None)
+            sf = next(
+                (
+                    f
+                    for f in self._project_state.scanned_files
+                    if f.source_id == scanned_file_source_id_for_material(m)
+                ),
+                None,
+            )
             if rpath is None or sf is None:
                 label = sf.name if sf else m.source_id
                 missing_labels.append(label)

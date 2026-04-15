@@ -1,6 +1,8 @@
 import os
 import json
 import dataclasses
+from typing import Optional
+
 from models import ProjectState, ScannedFile, Material, MatteRecord
 
 
@@ -21,7 +23,7 @@ class StateManager:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(state, f, cls=EnhancedJSONEncoder, ensure_ascii=False, indent=2)
 
-    def load_state(self, project_id: str) -> ProjectState:
+    def load_state(self, project_id: str) -> Optional[ProjectState]:
         file_path = os.path.join(self.base_dir, f"{project_id}.json")
         if not os.path.exists(file_path):
             return None
