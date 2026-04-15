@@ -1,3 +1,4 @@
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from models import ProjectState
+from models import ProjectState, scanned_file_source_id_for_material
 
 
 class MaterialsPage(QWidget):
@@ -58,12 +59,21 @@ class MaterialsPage(QWidget):
                 return True
         return False
 
+    def _selected_video_frame_count(self, video_source_id: str) -> int:
+        n = 0
+        for m in self._state.selected_materials:
+            if not m.selected or m.frame_idx is None:
+                continue
+            if scanned_file_source_id_for_material(m) == video_source_id:
+                n += 1
+        return n
+
     def _clear_grid(self) -> None:
         while self._grid_layout.count():
             item = self._grid_layout.takeAt(0)
             w = item.widget()
-            if w is not None:
-                w.deleteLater()
+            if w is not None and not sip.isdeleted(w):
+                sip.delete(w)
 
     def _rebuild_grid(self) -> None:
         self._clear_grid()
@@ -117,7 +127,9 @@ class MaterialsPage(QWidget):
                 )
                 v.addWidget(cb)
             else:
-                btn = QPushButton("选择帧")
+                n_frames = self._selected_video_frame_count(sf.source_id)
+                btn_text = "选择帧" if n_frames == 0 else f"已选 {n_frames} 帧"
+                btn = QPushButton(btn_text)
                 btn.clicked.connect(
                     lambda checked=False, sid=sf.source_id: self.video_pick_requested.emit(sid)
                 )

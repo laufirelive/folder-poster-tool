@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -101,7 +102,7 @@ class VideoFramesModal(QDialog):
             btn.setIcon(QIcon(scaled))
 
     def _update_count_label(self) -> None:
-        self._count_label.setText(f"Selected {len(self._selected)}/{self.FRAME_COUNT}")
+        self._count_label.setText(f"已选 {len(self._selected)}/{self.FRAME_COUNT}")
 
     def _on_pick(self, idx: int) -> None:
         if idx in self._selected:
@@ -119,12 +120,16 @@ class VideoFramesModal(QDialog):
     def _on_regenerate(self) -> None:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            regenerate_unselected_preview_frames(
-                self._video_path,
-                self._preview_dir,
-                sorted(self._selected),
-                frame_count=self.FRAME_COUNT,
-            )
+            try:
+                regenerate_unselected_preview_frames(
+                    self._video_path,
+                    self._preview_dir,
+                    sorted(self._selected),
+                    frame_count=self.FRAME_COUNT,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "重新生成失败", str(exc))
+                return
         finally:
             QApplication.restoreOverrideCursor()
         self._reload_thumbnails()

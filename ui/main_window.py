@@ -128,7 +128,21 @@ class MainWindow(QMainWindow):
         if self._materials_page is not None and not pm.isNull():
             self._materials_page.set_video_thumbnail(source_id, pm)
 
-        modal = VideoFramesModal(paths, sf.path, out_dir, parent=self)
+        initial_selected_indices = sorted(
+            m.frame_idx
+            for m in self._project_state.selected_materials
+            if m.selected
+            and m.frame_idx is not None
+            and scanned_file_source_id_for_material(m) == source_id
+        )
+
+        modal = VideoFramesModal(
+            paths,
+            sf.path,
+            out_dir,
+            initial_selected_indices=initial_selected_indices,
+            parent=self,
+        )
         if modal.exec() != QDialog.DialogCode.Accepted:
             return
 

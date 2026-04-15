@@ -59,16 +59,16 @@ def test_selected_count_label_updates(qapp, tmp_path):
     modal = VideoFramesModal(paths, video, pdir, parent=None)
     label = modal.findChild(QLabel, "selected_count_label")
     assert label is not None
-    assert label.text() == "Selected 0/32"
+    assert label.text() == "已选 0/32"
 
     modal._buttons[0].click()
-    assert label.text() == "Selected 1/32"
+    assert label.text() == "已选 1/32"
 
     modal._buttons[1].click()
-    assert label.text() == "Selected 2/32"
+    assert label.text() == "已选 2/32"
 
     modal._buttons[0].click()
-    assert label.text() == "Selected 1/32"
+    assert label.text() == "已选 1/32"
 
 
 def test_multi_select_toggle_and_selected_frame_indices(qapp, tmp_path):
@@ -106,7 +106,7 @@ def test_initial_selected_indices(qapp, tmp_path):
         paths, video, pdir, initial_selected_indices=[1, 4], parent=None
     )
     assert modal.selected_frame_indices() == [1, 4]
-    assert modal.findChild(QLabel, "selected_count_label").text() == "Selected 2/32"
+    assert modal.findChild(QLabel, "selected_count_label").text() == "已选 2/32"
 
 
 @patch("ui.widgets.video_frames_modal.regenerate_unselected_preview_frames")
@@ -127,6 +127,23 @@ def test_regenerate_calls_extractor_with_keep_indices(mock_regen, qapp, tmp_path
     assert args[0] == video
     assert args[1] == pdir
     assert list(args[2]) == [0, 2]
+
+
+@patch("ui.widgets.video_frames_modal.regenerate_unselected_preview_frames", side_effect=RuntimeError("disk full"))
+@patch("ui.widgets.video_frames_modal.QMessageBox.warning")
+def test_regenerate_exception_shows_warning_without_reload(mock_warn, mock_regen, qapp, tmp_path):
+    paths, video, pdir = _modal_paths(tmp_path, 4)
+    modal = VideoFramesModal(paths, video, pdir, parent=None)
+    modal._reload_thumbnails = lambda: (_ for _ in ()).throw(AssertionError("_reload_thumbnails should not run"))
+
+    modal._buttons[0].click()
+    regen_btn = modal.findChild(QPushButton, "regenerate_btn")
+    assert regen_btn is not None
+    regen_btn.click()
+
+    mock_warn.assert_called_once()
+    assert modal.selected_frame_indices() == [0]
+    assert len(modal._paths) == 4
 
 
 def test_accept_returns_sorted_selected_indices(qapp, tmp_path):
