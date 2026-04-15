@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self._matting_row_data: list[tuple[str, str, Material]] = []
         self._matting_total: int = 0
         self._matting_cancel_requested: bool = False
+        self._matting_any_failure: bool = False
 
         self._psd_thread: QThread | None = None
         self._psd_worker: PsdExportWorker | None = None
@@ -219,6 +220,7 @@ class MainWindow(QMainWindow):
         specs = [(d, p, (mat.source_id, mat.frame_idx)) for d, p, mat in row_work]
         self._matting_page = MattingPage(self._project_state, specs, self)
         self._matting_page.cancel_requested.connect(self._on_matting_cancel)
+        self._matting_page.retry_all_failed_requested.connect(self._on_retry_all_matting_failed)
         self.stacked_widget.addWidget(self._matting_page)
         self.stacked_widget.setCurrentWidget(self._matting_page)
 
@@ -226,6 +228,7 @@ class MainWindow(QMainWindow):
         self._matting_total = len(row_work)
         self._matting_records = []
         self._matting_cancel_requested = False
+        self._matting_any_failure = False
         self._cancel_event = threading.Event()
 
         self._matting_thread = QThread()
@@ -234,6 +237,7 @@ class MainWindow(QMainWindow):
             self._state_manager.base_dir,
             self._project_state.project_id,
             self._cancel_event,
+            list(self._project_state.matte_map),
         )
         self._matting_worker.moveToThread(self._matting_thread)
         self._matting_thread.started.connect(self._matting_worker.run)
@@ -244,6 +248,13 @@ class MainWindow(QMainWindow):
         self._matting_worker.finished.connect(self._matting_worker.deleteLater)
         self._matting_thread.finished.connect(self._on_matting_thread_finished)
         self._matting_thread.start()
+        self._matting_page.set_worker_running(True)
+
+    def _on_retry_all_matting_failed(self) -> None:
+        if self._matting_thread is not None and self._matting_thread.isRunning():
+            QMessageBox.information(self, "请稍候", "抠像任务仍在运行中。")
+            return
+        self._on_materials_next()
 
     def _on_matting_progress(self, index: int, total: int, _source_path: str, name: str) -> None:
         if self._matting_page is None:
@@ -271,6 +282,7 @@ class MainWindow(QMainWindow):
                     )
                 )
         else:
+            self._matting_any_failure = True
             self._matting_page.set_row_status(index, MattingRowStatus.ERROR, None)
         pct = int(100 * (index + 1) / total) if total else 100
         self._matting_page.set_overall_progress(pct)
@@ -292,6 +304,16 @@ class MainWindow(QMainWindow):
             if self._materials_page is not None:
                 self._materials_page.set_state(self._project_state)
             self.stacked_widget.setCurrentWidget(self._materials_page)
+        elif (
+            self._project_state is not None
+            and not self._matting_cancel_requested
+            and self._matting_any_failure
+        ):
+            self._project_state.current_step = "matting"
+            self._state_manager.save_state(self._project_state)
+            if self._matting_page is not None:
+                self._matting_page.set_failures_present(True)
+                self._matting_page.set_worker_running(True)
         elif self._project_state is not None and not self._matting_cancel_requested:
             self._project_state.current_step = "export"
             self._state_manager.save_state(self._project_state)
@@ -300,6 +322,8 @@ class MainWindow(QMainWindow):
         self._matting_worker = None
 
     def _on_matting_thread_finished(self) -> None:
+        if self._matting_page is not None:
+            self._matting_page.set_worker_running(False)
         self._matting_thread = None
         self._cancel_event = None
 

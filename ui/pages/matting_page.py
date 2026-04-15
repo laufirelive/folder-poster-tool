@@ -85,6 +85,7 @@ def _load_thumb(path: str) -> QPixmap:
 
 class MattingPage(QWidget):
     cancel_requested = pyqtSignal()
+    retry_all_failed_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -140,8 +141,14 @@ class MattingPage(QWidget):
         cancel_btn = QPushButton("取消", self)
         cancel_btn.clicked.connect(self.cancel_requested.emit)
 
+        self.retry_failed_button = QPushButton("重试失败项", self)
+        self.retry_failed_button.setVisible(False)
+        self.retry_failed_button.setEnabled(False)
+        self.retry_failed_button.clicked.connect(self.retry_all_failed_requested.emit)
+
         bottom = QHBoxLayout()
         bottom.addStretch()
+        bottom.addWidget(self.retry_failed_button)
         bottom.addWidget(cancel_btn)
 
         outer = QVBoxLayout(self)
@@ -151,6 +158,16 @@ class MattingPage(QWidget):
         outer.addLayout(bottom)
 
         self._build_rows()
+
+    def set_failures_present(self, has_failures: bool) -> None:
+        """Show or hide the global retry control (used after a run with one or more errors)."""
+        self.retry_failed_button.setVisible(has_failures)
+        self.retry_failed_button.setEnabled(has_failures)
+
+    def set_worker_running(self, running: bool) -> None:
+        """Disable retry while the matting worker thread is active."""
+        if self.retry_failed_button.isVisible():
+            self.retry_failed_button.setEnabled(not running)
 
     def set_state(self, state: ProjectState) -> None:
         self._state = state
