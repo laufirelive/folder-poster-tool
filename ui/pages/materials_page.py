@@ -1,5 +1,5 @@
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -13,7 +13,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import os
 from models import ProjectState, scanned_file_source_id_for_material
+from ui.workers.thumbnail_worker import ThumbnailWorker
 
 
 class MaterialsPage(QWidget):
@@ -25,15 +27,59 @@ class MaterialsPage(QWidget):
         super().__init__(parent)
         self._state = project_state
         self._thumb_cache: dict[str, QPixmap] = {}
+        self._current_cols = 3
+
+        self.setStyleSheet("""
+            QFrame#MaterialCard {
+                background-color: #ffffff;
+                border: 1px solid #dddddd;
+                border-radius: 8px;
+            }
+            QFrame#MaterialCard:hover {
+                border: 1px solid #007bff;
+            }
+            QLabel {
+                font-family: sans-serif;
+            }
+            QPushButton#NextButton {
+                padding: 10px 30px;
+                background-color: #007bff;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton#NextButton:hover {
+                background-color: #0056b3;
+            }
+            QPushButton#NextButton:disabled {
+                background-color: #cccccc;
+                color: #888888;
+            }
+            QPushButton#PickButton {
+                padding: 6px;
+                background-color: #f0f0f0;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+            }
+            QPushButton#PickButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._container = QWidget()
         self._grid_layout = QGridLayout(self._container)
-        self._grid_layout.setSpacing(12)
+        self._grid_layout.setSpacing(16)
+        self._grid_layout.setContentsMargins(20, 20, 20, 20)
         self._scroll.setWidget(self._container)
 
         self._next_btn = QPushButton("下一步", self)
+        self._next_btn.setObjectName("NextButton")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.clicked.connect(self.next_requested.emit)
 
         footer = QHBoxLayout()
@@ -43,7 +89,35 @@ class MaterialsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.addWidget(self._scroll)
         outer.addLayout(footer)
+
+        self._start_thumbnail_worker()
         self._rebuild_grid()
+
+    def _start_thumbnail_worker(self):
+        video_paths = []
+        for sf in self._state.scanned_files:
+            if sf.type == "video" and sf.source_id not in self._thumb_cache:
+                video_paths.append((sf.source_id, sf.path))
+        
+        if not video_paths:
+            return
+
+        # Need a place to store thumbs temporarily
+        cache_dir = os.path.expanduser("~/.folder-poster/cache/thumbs")
+        
+        self._thumb_thread = QThread()
+        self._thumb_worker = ThumbnailWorker(video_paths, cache_dir)
+        self._thumb_worker.moveToThread(self._thumb_thread)
+        
+        self._thumb_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self._thumb_thread.started.connect(self._thumb_worker.run)
+        
+        self._thumb_thread.start()
+
+    def _on_thumbnail_ready(self, source_id: str, path: str):
+        pm = QPixmap(path)
+        if not pm.isNull():
+            self.set_video_thumbnail(source_id, pm)
 
     def set_state(self, state: ProjectState) -> None:
         self._state = state
@@ -77,15 +151,19 @@ class MaterialsPage(QWidget):
 
     def _rebuild_grid(self) -> None:
         self._clear_grid()
-        cols = 3
+        cols = self._current_cols
         for i, sf in enumerate(self._state.scanned_files):
             card = QFrame()
+            card.setObjectName("MaterialCard")
             card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setFixedWidth(200)
             v = QVBoxLayout(card)
+            v.setContentsMargins(10, 10, 10, 10)
+
             thumb = QLabel()
-            thumb.setFixedSize(160, 90)
+            thumb.setFixedSize(180, 120)
             thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            thumb.setStyleSheet("background: #222222; color: #aaaaaa;")
+            thumb.setStyleSheet("background: #f0f0f0; color: #888888; border-radius: 4px;")
 
             if sf.type == "image":
                 pm = QPixmap(sf.path)
@@ -110,9 +188,13 @@ class MaterialsPage(QWidget):
                         )
                     )
                 else:
-                    thumb.setText("视频")
+                    thumb.setText("视频 (提取中...)")
 
-            name = QLabel(sf.name)
+            name = QLabel()
+            metrics = name.fontMetrics()
+            elided_name = metrics.elidedText(sf.name, Qt.TextElideMode.ElideRight, 180)
+            name.setText(elided_name)
+            name.setStyleSheet("font-size: 12px; color: #333;")
             name.setWordWrap(False)
             name.setToolTip(sf.path)
 
@@ -121,6 +203,7 @@ class MaterialsPage(QWidget):
 
             if sf.type == "image":
                 cb = QCheckBox("选用")
+                cb.setCursor(Qt.CursorShape.PointingHandCursor)
                 cb.setChecked(self._is_image_selected(sf.source_id))
                 cb.toggled.connect(
                     lambda checked, sid=sf.source_id: self.image_toggle_requested.emit(sid, checked)
@@ -130,12 +213,41 @@ class MaterialsPage(QWidget):
                 n_frames = self._selected_video_frame_count(sf.source_id)
                 btn_text = "选择帧" if n_frames == 0 else f"已选 {n_frames} 帧"
                 btn = QPushButton(btn_text)
+                btn.setObjectName("PickButton")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.clicked.connect(
                     lambda checked=False, sid=sf.source_id: self.video_pick_requested.emit(sid)
                 )
+                if n_frames > 0:
+                    btn.setStyleSheet("background-color: #e6f2ff; color: #007bff; border: 1px solid #007bff;")
                 v.addWidget(btn)
 
             self._grid_layout.addWidget(card, i // cols, i % cols)
 
         n_selected = len([m for m in self._state.selected_materials if m.selected])
         self._next_btn.setEnabled(n_selected >= 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._adjust_columns()
+
+    def _adjust_columns(self):
+        if not self._state or not self._state.scanned_files:
+            return
+        # Get width of scroll area viewport
+        width = self._scroll.viewport().width()
+        # Card width = 180 (thumb) + 20 (margins) + 16 (spacing) = ~216, let's say 240
+        cols = max(1, width // 240)
+        
+        if self._current_cols != cols:
+            self._current_cols = cols
+            
+            # Reposition existing widgets without deleting them
+            widgets = []
+            while self._grid_layout.count():
+                item = self._grid_layout.takeAt(0)
+                if item.widget():
+                    widgets.append(item.widget())
+            
+            for i, w in enumerate(widgets):
+                self._grid_layout.addWidget(w, i // cols, i % cols)

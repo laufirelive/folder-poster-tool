@@ -109,6 +109,9 @@ class MainWindow(QMainWindow):
     def _on_video_pick(self, source_id: str) -> None:
         if self._project_state is None:
             return
+        if getattr(self, "_extractor_thread", None) is not None and self._extractor_thread.isRunning():
+            return
+
         sf = next((f for f in self._project_state.scanned_files if f.source_id == source_id), None)
         if sf is None:
             return
@@ -119,12 +122,56 @@ class MainWindow(QMainWindow):
             "previews",
             source_id,
         )
-        try:
-            paths = extract_preview_frames(sf.path, out_dir, 32)
-        except Exception as exc:
-            QMessageBox.warning(self, "提取失败", str(exc))
+
+        import glob
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt
+
+        existing_frames = sorted(glob.glob(os.path.join(out_dir, "frame_*.png")))
+        if len(existing_frames) == 32:
+            self._show_video_frames_modal(sf, source_id, out_dir, existing_frames)
             return
 
+        progress = QProgressDialog("正在提取视频预览帧，请稍候...", "取消", 0, 0, self)
+        progress.setWindowTitle("处理中")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+
+        from ui.workers.extractor_worker import ExtractorWorker
+        self._extractor_thread = QThread()
+        self._extractor_worker = ExtractorWorker(sf.path, out_dir, 32)
+        self._extractor_worker.moveToThread(self._extractor_thread)
+
+        def on_ok(paths):
+            progress.close()
+            self._show_video_frames_modal(sf, source_id, out_dir, paths)
+
+        def on_err(err):
+            progress.close()
+            QMessageBox.warning(self, "提取失败", err)
+
+        def on_cleanup():
+            self._extractor_thread = None
+            self._extractor_worker = None
+
+        self._extractor_worker.finished_ok.connect(on_ok)
+        self._extractor_worker.finished_err.connect(on_err)
+        self._extractor_worker.finished_ok.connect(self._extractor_thread.quit)
+        self._extractor_worker.finished_err.connect(self._extractor_thread.quit)
+        self._extractor_worker.finished_ok.connect(self._extractor_worker.deleteLater)
+        self._extractor_worker.finished_err.connect(self._extractor_worker.deleteLater)
+        self._extractor_thread.finished.connect(self._extractor_thread.deleteLater)
+        self._extractor_thread.finished.connect(on_cleanup)
+
+        self._extractor_thread.started.connect(self._extractor_worker.run)
+        
+        # Prevent GC
+        self._extractor_progress = progress
+
+        self._extractor_thread.start()
+
+    def _show_video_frames_modal(self, sf, source_id, out_dir, paths) -> None:
         pm = QPixmap(paths[0])
         if self._materials_page is not None and not pm.isNull():
             self._materials_page.set_video_thumbnail(source_id, pm)

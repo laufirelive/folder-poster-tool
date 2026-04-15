@@ -10,12 +10,19 @@ from PyQt6.QtWidgets import QApplication, QPushButton
 from models import Material, ProjectState, ScannedFile, material_source_id_for_video
 
 
+from unittest.mock import patch
+
 def _sf(**kwargs):
     """ScannedFile with required fields for ProjectState."""
     defaults = {"path": "/x", "name": "x", "type": "video", "source_id": ""}
     defaults.update(kwargs)
     return ScannedFile(**defaults)
 
+
+@pytest.fixture(autouse=True)
+def mock_thumbnail_worker():
+    with patch("ui.pages.materials_page.MaterialsPage._start_thumbnail_worker"):
+        yield
 
 @pytest.fixture(scope="module")
 def qapp():

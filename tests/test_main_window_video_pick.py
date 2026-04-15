@@ -37,9 +37,10 @@ def test_video_frames_modal_gets_initial_selected_indices_from_state(qapp, tmp_p
         ],
     )
 
-    fake_paths = [str(tmp_path / f"f{i}.png") for i in range(32)]
+    out_dir = tmp_path / "projx" / "previews" / vid
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fake_paths = [str(out_dir / f"frame_{i:03d}.png") for i in range(1, 33)]
     for p in fake_paths:
-        Path(p).parent.mkdir(parents=True, exist_ok=True)
         Path(p).write_bytes(b"")
 
     construct_calls: list[tuple[tuple, dict]] = []
@@ -53,12 +54,13 @@ def test_video_frames_modal_gets_initial_selected_indices_from_state(qapp, tmp_p
 
     with patch("ui.main_window.extract_preview_frames", return_value=fake_paths):
         with patch("ui.main_window.VideoFramesModal", side_effect=fake_modal):
-            from ui.main_window import MainWindow
+            with patch("ui.pages.materials_page.MaterialsPage._start_thumbnail_worker"):
+                from ui.main_window import MainWindow
 
-            win = MainWindow()
-            win._state_manager.base_dir = str(tmp_path)
-            win._project_state = state
-            win._on_video_pick(vid)
+                win = MainWindow()
+                win._state_manager.base_dir = str(tmp_path)
+                win._project_state = state
+                win._on_video_pick(vid)
 
     assert len(construct_calls) == 1
     _args, kwargs = construct_calls[0]
