@@ -128,23 +128,24 @@ class MainWindow(QMainWindow):
         if self._materials_page is not None and not pm.isNull():
             self._materials_page.set_video_thumbnail(source_id, pm)
 
-        modal = VideoFramesModal(paths, initial_index=0, parent=self)
+        modal = VideoFramesModal(paths, sf.path, out_dir, parent=self)
         if modal.exec() != QDialog.DialogCode.Accepted:
             return
 
-        idx = modal.selected_frame_index()
+        indices = modal.selected_frame_indices()
         mats = [
             m
             for m in self._project_state.selected_materials
             if scanned_file_source_id_for_material(m) != source_id
         ]
-        mats.append(
-            Material(
-                source_id=material_source_id_for_video(source_id, idx),
-                frame_idx=idx,
-                selected=True,
+        for idx in sorted(indices):
+            mats.append(
+                Material(
+                    source_id=material_source_id_for_video(source_id, idx),
+                    frame_idx=idx,
+                    selected=True,
+                )
             )
-        )
         self._project_state.selected_materials = mats
         self._state_manager.save_state(self._project_state)
         if self._materials_page is not None:
