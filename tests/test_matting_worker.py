@@ -38,12 +38,15 @@ def test_matting_worker_skips_model_when_cache_valid(qapp, tmp_path, monkeypatch
 
     existing_matte = tmp_path / "cached.png"
     Image.new("RGBA", (8, 8), (255, 0, 0, 200)).save(existing_matte)
+    existing_mask = tmp_path / "cached_mask.png"
+    Image.new("L", (8, 8), 255).save(existing_mask)
 
     matte_map = [
         MatteRecord(
             source_id="m1",
             source_mtime=mtime,
             matte_path=str(existing_matte),
+            mask_path=str(existing_mask),
             is_active=True,
         )
     ]
@@ -54,13 +57,13 @@ def test_matting_worker_skips_model_when_cache_valid(qapp, tmp_path, monkeypatch
     worker = MattingWorker(rows, str(tmp_path), "proj1", threading.Event(), matte_map)
     calls: list[None] = []
 
-    def spy_predict(self_, inp, outp):
+    def spy_predict(self_, inp, matte_out, mask_out):
         calls.append(None)
-        return __import__("core.birefnet", fromlist=["MattingEngine"]).MattingEngine.predict_matte(
-            self_, inp, outp
+        return __import__("core.birefnet", fromlist=["MattingEngine"]).MattingEngine.predict_outputs(
+            self_, inp, matte_out, mask_out
         )
 
-    monkeypatch.setattr("core.birefnet.MattingEngine.predict_matte", spy_predict)
+    monkeypatch.setattr("core.birefnet.MattingEngine.predict_outputs", spy_predict)
 
     done: list[tuple] = []
     worker.row_done.connect(lambda *a: done.append(tuple(a)))
@@ -69,9 +72,10 @@ def test_matting_worker_skips_model_when_cache_valid(qapp, tmp_path, monkeypatch
 
     assert calls == []
     assert len(done) == 1
-    idx, path, ok, err = done[0]
+    idx, matte_path, mask_path, ok, err = done[0]
     assert (idx, ok, err) == (0, True, "")
-    assert Path(path).resolve() == Path(str(existing_matte)).resolve()
+    assert Path(matte_path).resolve() == Path(str(existing_matte)).resolve()
+    assert Path(mask_path).resolve() == Path(str(existing_mask)).resolve()
 
 
 def test_matting_worker_runs_model_when_cache_missing(qapp, tmp_path, monkeypatch):
@@ -88,13 +92,13 @@ def test_matting_worker_runs_model_when_cache_missing(qapp, tmp_path, monkeypatc
 
     worker = MattingWorker(rows, str(tmp_path), "proj2", threading.Event(), [])
     predicts = {"n": 0}
-    real = __import__("core.birefnet", fromlist=["MattingEngine"]).MattingEngine.predict_matte
+    real = __import__("core.birefnet", fromlist=["MattingEngine"]).MattingEngine.predict_outputs
 
-    def counting_pred(self_, inp, out):
+    def counting_pred(self_, inp, matte_out, mask_out):
         predicts["n"] += 1
-        return real(self_, inp, out)
+        return real(self_, inp, matte_out, mask_out)
 
-    monkeypatch.setattr("core.birefnet.MattingEngine.predict_matte", counting_pred)
+    monkeypatch.setattr("core.birefnet.MattingEngine.predict_outputs", counting_pred)
 
     worker.run()
     assert predicts["n"] == 1

@@ -4,6 +4,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 class ThumbnailWorker(QObject):
     thumbnail_ready = pyqtSignal(str, str)
+    finished = pyqtSignal()
 
     def __init__(self, video_paths: list[tuple[str, str]], cache_dir: str):
         super().__init__()
@@ -30,3 +31,4 @@ class ThumbnailWorker(QObject):
             
             if os.path.exists(out_path):
                 self.thumbnail_ready.emit(source_id, out_path)
+        self.finished.emit()

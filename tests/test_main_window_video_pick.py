@@ -52,16 +52,52 @@ def test_video_frames_modal_gets_initial_selected_indices_from_state(qapp, tmp_p
         m.selected_frame_indices.return_value = [1, 4]
         return m
 
-    with patch("ui.main_window.extract_preview_frames", return_value=fake_paths):
-        with patch("ui.main_window.VideoFramesModal", side_effect=fake_modal):
-            with patch("ui.pages.materials_page.MaterialsPage._start_thumbnail_worker"):
-                from ui.main_window import MainWindow
+    with patch("ui.main_window.VideoFramesModal", side_effect=fake_modal):
+        with patch("ui.pages.materials_page.MaterialsPage._start_thumbnail_worker"):
+            from ui.main_window import MainWindow
 
-                win = MainWindow()
-                win._state_manager.base_dir = str(tmp_path)
-                win._project_state = state
-                win._on_video_pick(vid)
+            win = MainWindow()
+            win._state_manager.base_dir = str(tmp_path)
+            win._project_state = state
+            win._on_video_pick(vid)
 
     assert len(construct_calls) == 1
     _args, kwargs = construct_calls[0]
     assert kwargs.get("initial_selected_indices") == [1, 4]
+
+
+def test_video_pick_opens_modal_immediately_without_waiting_full_extraction(qapp, tmp_path):
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    vid = "vidsrc2"
+    sf = ScannedFile(path=str(tmp_path / "b.mp4"), name="b.mp4", type="video", source_id=vid)
+    state = ProjectState(
+        project_id="projy",
+        input_path=str(tmp_path),
+        mode="video",
+        depth=1,
+        scanned_files=[sf],
+        selected_materials=[],
+    )
+
+    construct_calls: list[tuple[tuple, dict]] = []
+
+    def fake_modal(*args, **kwargs):
+        construct_calls.append((args, kwargs))
+        m = MagicMock()
+        m.exec.return_value = QDialog.DialogCode.Rejected
+        m.selected_frame_indices.return_value = []
+        return m
+
+    with patch("ui.main_window.VideoFramesModal", side_effect=fake_modal):
+        with patch("ui.pages.materials_page.MaterialsPage._start_thumbnail_worker"):
+            from ui.main_window import MainWindow
+
+            win = MainWindow()
+            win._state_manager.base_dir = str(tmp_path)
+            win._project_state = state
+            win._on_video_pick(vid)
+
+    assert len(construct_calls) == 1

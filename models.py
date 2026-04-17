@@ -42,7 +42,8 @@ class MatteRecord:
     source_id: str
     source_mtime: float
     matte_path: str
-    is_active: bool
+    is_active: bool = True
+    mask_path: str = ""
 
 @dataclass
 class ProjectState:

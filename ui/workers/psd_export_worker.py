@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -16,12 +16,14 @@ class PsdExportWorker(QObject):
     def __init__(
         self,
         matte_map: Iterable[MatteRecord],
+        source_path_by_source_id: Mapping[str, str],
         width: int,
         height: int,
         output_path: str,
     ) -> None:
         super().__init__()
         self._matte_map = matte_map
+        self._source_path_by_source_id = dict(source_path_by_source_id)
         self._width = width
         self._height = height
         self._output_path = output_path
@@ -32,6 +34,7 @@ class PsdExportWorker(QObject):
 
             export_matte_psd(
                 self._matte_map,
+                self._source_path_by_source_id,
                 self._width,
                 self._height,
                 self._output_path,
