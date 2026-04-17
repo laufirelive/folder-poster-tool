@@ -9,7 +9,7 @@ from typing import List, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.birefnet import MattingEngine
-from core.matte_cache import find_reusable_matte_path
+from core.matte_cache import find_reusable_matte_paths
 from models import Material, MatteRecord
 
 RowWork = Tuple[str, str, Material]  # display_name, source_path, material
@@ -17,7 +17,7 @@ RowWork = Tuple[str, str, Material]  # display_name, source_path, material
 
 class MattingWorker(QObject):
     progress = pyqtSignal(int, int, str, str)  # index, total, source_path, display_name
-    row_done = pyqtSignal(int, str, bool, str)  # index, matte_path, ok, err_msg
+    row_done = pyqtSignal(int, str, str, bool, str)  # index, matte_path, mask_path, ok, err_msg
     finished = pyqtSignal()
 
     def __init__(
@@ -43,15 +43,23 @@ class MattingWorker(QObject):
             if self._cancel_event.is_set():
                 break
             self.progress.emit(i, total, src_path, display_name)
-            cached = find_reusable_matte_path(mat, src_path, self._matte_map)
+            cached = find_reusable_matte_paths(mat, src_path, self._matte_map)
             if cached is not None:
-                self.row_done.emit(i, os.path.abspath(cached), True, "")
+                matte_path, mask_path = cached
+                self.row_done.emit(i, os.path.abspath(matte_path), os.path.abspath(mask_path), True, "")
                 continue
             stem = os.path.splitext(os.path.basename(src_path))[0]
-            out_path = os.path.join(out_root, f"{stem}_{i:03d}_matte.png")
+            matte_out = os.path.join(out_root, f"{stem}_{i:03d}_matte.png")
+            mask_out = os.path.join(out_root, f"{stem}_{i:03d}_mask.png")
             try:
-                engine.predict_matte(src_path, out_path)
-                self.row_done.emit(i, os.path.abspath(out_path), True, "")
+                engine.predict_outputs(src_path, matte_out, mask_out)
+                self.row_done.emit(
+                    i,
+                    os.path.abspath(matte_out),
+                    os.path.abspath(mask_out),
+                    True,
+                    "",
+                )
             except Exception as exc:  # noqa: BLE001 — surface to UI
-                self.row_done.emit(i, "", False, str(exc))
+                self.row_done.emit(i, "", "", False, str(exc))
         self.finished.emit()

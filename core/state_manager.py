@@ -36,6 +36,12 @@ class StateManager:
         data["selected_materials"] = [
             Material(**m) for m in data.get("selected_materials", [])
         ]
-        data["matte_map"] = [MatteRecord(**mr) for mr in data.get("matte_map", [])]
+        matte_map = []
+        for mr in data.get("matte_map", []):
+            # Backward compatibility: old state files may not contain mask_path.
+            if "mask_path" not in mr:
+                mr = {**mr, "mask_path": ""}
+            matte_map.append(MatteRecord(**mr))
+        data["matte_map"] = matte_map
 
         return ProjectState(**data)

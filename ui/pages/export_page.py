@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ if __name__ == "__main__":
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -29,8 +31,6 @@ from PyQt6.QtWidgets import (
 )
 
 from models import ProjectState
-
-_DEFAULT_PSD_NAME = "folder_poster_export.psd"
 
 _PRESET_4K = (4000, 6000)
 _PRESET_2K = (2000, 3000)
@@ -81,6 +81,8 @@ class ExportPage(QWidget):
         self._size_combo.currentIndexChanged.connect(self._on_preset_changed)
 
         self._custom_label = QLabel("须保持 2:3", self)
+        self._lock_ratio = QCheckBox("锁定 2:3（推荐）", self)
+        self._lock_ratio.setChecked(True)
         self._width_spin = QSpinBox(self)
         self._height_spin = QSpinBox(self)
         for sp in (self._width_spin, self._height_spin):
@@ -92,6 +94,7 @@ class ExportPage(QWidget):
 
         custom_row = QHBoxLayout()
         custom_row.addWidget(self._custom_label)
+        custom_row.addWidget(self._lock_ratio)
         custom_row.addWidget(QLabel("宽:", self))
         custom_row.addWidget(self._width_spin)
         custom_row.addWidget(QLabel("高:", self))
@@ -104,8 +107,8 @@ class ExportPage(QWidget):
         size_row.addWidget(QLabel("px（2:3）", self))
         size_row.addStretch()
 
-        export_btn = QPushButton("导出 PSD", self)
-        export_btn.clicked.connect(self._on_export_clicked)
+        self._export_btn = QPushButton("导出 PSD", self)
+        self._export_btn.clicked.connect(self._on_export_clicked)
 
         outer = QVBoxLayout(self)
         outer.addLayout(header)
@@ -119,7 +122,7 @@ class ExportPage(QWidget):
         outer.addLayout(size_row)
         outer.addLayout(custom_row)
         outer.addStretch()
-        outer.addWidget(export_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(self._export_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._refresh_summary()
         self._on_preset_changed(self._size_combo.currentIndex())
@@ -147,6 +150,7 @@ class ExportPage(QWidget):
         data = self._size_combo.itemData(index)
         custom = data is None
         self._custom_label.setVisible(custom)
+        self._lock_ratio.setVisible(custom)
         self._width_spin.setVisible(custom)
         self._height_spin.setVisible(custom)
         if not custom and data is not None:
@@ -159,7 +163,7 @@ class ExportPage(QWidget):
             self._height_spin.blockSignals(False)
 
     def _on_width_changed(self, value: int) -> None:
-        if self._size_combo.currentData() is None:
+        if self._size_combo.currentData() is None and self._lock_ratio.isChecked():
             new_h = max(2, value * 3 // 2)
             if new_h != self._height_spin.value():
                 self._height_spin.blockSignals(True)
@@ -167,12 +171,21 @@ class ExportPage(QWidget):
                 self._height_spin.blockSignals(False)
 
     def _on_height_changed(self, value: int) -> None:
-        if self._size_combo.currentData() is None:
+        if self._size_combo.currentData() is None and self._lock_ratio.isChecked():
             new_w = max(2, value * 2 // 3)
             if new_w != self._width_spin.value():
                 self._width_spin.blockSignals(True)
                 self._width_spin.setValue(new_w)
                 self._width_spin.blockSignals(False)
+
+    @staticmethod
+    def _timestamped_psd_name() -> str:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"folder_poster_export_{ts}.psd"
+
+    def set_exporting(self, exporting: bool) -> None:
+        self._export_btn.setEnabled(not exporting)
+        self._export_btn.setText("导出中..." if exporting else "导出 PSD")
 
     def _canvas_size(self) -> tuple[int, int]:
         data = self._size_combo.currentData()
@@ -194,7 +207,7 @@ class ExportPage(QWidget):
                 "保存路径不是有效的文件夹，请重新选择。",
             )
             return
-        out_path = os.path.join(directory, _DEFAULT_PSD_NAME)
+        out_path = os.path.join(directory, self._timestamped_psd_name())
         w, h = self._canvas_size()
         self.export_requested.emit(out_path, w, h)
 

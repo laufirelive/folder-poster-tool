@@ -1,7 +1,44 @@
-from PyQt6.QtCore import Qt
+import os
+
+from PyQt6.QtCore import QMimeData, Qt
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit,
                              QPushButton, QRadioButton, QSpinBox,
                              QHBoxLayout, QButtonGroup, QFileDialog)
+
+
+class FolderDropLineEdit(QLineEdit):
+    """QLineEdit that accepts dragging a local folder path."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _extract_folder_from_mime_data(mime_data: QMimeData) -> str | None:
+        if not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile().strip()
+            if local_path and os.path.isdir(local_path):
+                return local_path
+        return None
+
+    def dragEnterEvent(self, event):  # noqa: N802 (Qt naming)
+        folder = self._extract_folder_from_mime_data(event.mimeData())
+        if folder:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):  # noqa: N802 (Qt naming)
+        folder = self._extract_folder_from_mime_data(event.mimeData())
+        if folder:
+            self.setText(folder)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 class HomePage(QWidget):
@@ -82,7 +119,7 @@ class HomePage(QWidget):
 
         # Path Input
         path_layout = QHBoxLayout()
-        self.path_input = QLineEdit()
+        self.path_input = FolderDropLineEdit()
         self.path_input.setPlaceholderText("请选择要扫描的文件夹路径...")
         browse_btn = QPushButton("浏览...")
         browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -146,6 +183,18 @@ class HomePage(QWidget):
 
     def _update_start_button_enabled(self, _text: str) -> None:
         self.start_btn.setEnabled(bool(self.path_input.text().strip()))
+
+    def set_scanning(self, scanning: bool) -> None:
+        self.path_input.setEnabled(not scanning)
+        self.video_radio.setEnabled(not scanning)
+        self.image_radio.setEnabled(not scanning)
+        self.depth_spinner.setEnabled(not scanning)
+        if scanning:
+            self.start_btn.setEnabled(False)
+            self.start_btn.setText("扫描中...")
+        else:
+            self.start_btn.setText("开始扫描")
+            self._update_start_button_enabled(self.path_input.text())
 
     def _browse_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择文件夹")

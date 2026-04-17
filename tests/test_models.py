@@ -1,6 +1,7 @@
 import pytest
 from models import (
     Material,
+    MatteRecord,
     ProjectState,
     ScannedFile,
     material_source_id_for_video,
@@ -42,3 +43,24 @@ def test_scanned_file_has_source_id():
         source_id="abc123",
     )
     assert sf.source_id == "abc123"
+
+
+def test_matte_record_mask_path_defaults_to_empty():
+    rec = MatteRecord(
+        source_id="id-1",
+        source_mtime=123.0,
+        matte_path="/tmp/matte.png",
+        is_active=True,
+    )
+    assert rec.mask_path == ""
+
+
+def test_matte_record_accepts_mask_path():
+    rec = MatteRecord(
+        source_id="id-1",
+        source_mtime=123.0,
+        matte_path="/tmp/matte.png",
+        is_active=True,
+        mask_path="/tmp/mask.png",
+    )
+    assert rec.mask_path == "/tmp/mask.png"

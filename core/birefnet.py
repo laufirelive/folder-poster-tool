@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from typing import Any, Tuple
 
-MODEL_ID = "ZhengPeng7/BiRefNet"
+from core.model_manager import ModelManager
 
 _STUB_ENV = "FOLDER_POSTER_MATTING_STUB"
 
@@ -36,25 +36,39 @@ def _load_model() -> Tuple[Any, str]:
     import torch
     from transformers import AutoModelForImageSegmentation
 
+    model_dir = ModelManager().ensure_installed()
     device = _select_device()
     model = AutoModelForImageSegmentation.from_pretrained(
-        MODEL_ID,
+        model_dir,
         trust_remote_code=True,
+        local_files_only=True,
     )
     model.eval()
     model.to(device)
     if device == "cuda":
         torch.set_float32_matmul_precision("high")
         model.half()
+    else:
+        # Avoid dtype mismatch on CPU/MPS when weights are loaded as fp16.
+        model.float()
     return model, device
 
 
-def _stub_predict_matte(input_path: str, output_path: str) -> None:
-    """Write an RGBA copy of the input (full alpha) without loading the model."""
+def _stub_predict_outputs(input_path: str, matte_path: str, mask_path: str) -> None:
+    """Write RGBA + grayscale mask outputs without loading the model."""
     from PIL import Image
 
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
-    Image.open(input_path).convert("RGBA").save(output_path)
+    matte_dir = os.path.dirname(os.path.abspath(matte_path)) or "."
+    mask_dir = os.path.dirname(os.path.abspath(mask_path)) or "."
+    os.makedirs(matte_dir, exist_ok=True)
+    os.makedirs(mask_dir, exist_ok=True)
+
+    rgb = Image.open(input_path).convert("RGB")
+    rgba = rgb.copy()
+    mask = Image.new("L", rgb.size, color=255)
+    rgba.putalpha(mask)
+    rgba.save(matte_path)
+    mask.save(mask_path)
 
 
 class MattingEngine:
@@ -69,14 +83,14 @@ class MattingEngine:
             return
         self._model, self._device = _load_model()
 
-    def predict_matte(self, input_path: str, output_path: str) -> None:
+    def predict_outputs(self, input_path: str, matte_path: str, mask_path: str) -> None:
         """
-        Run matting on ``input_path`` and save an RGBA PNG to ``output_path``.
+        Run matting on ``input_path`` and save both RGBA matte + grayscale mask.
 
-        Parent directories for ``output_path`` are created if needed.
+        Parent directories are created for both outputs.
         """
         if os.environ.get(_STUB_ENV) == "1":
-            _stub_predict_matte(input_path, output_path)
+            _stub_predict_outputs(input_path, matte_path, mask_path)
             return
 
         from PIL import Image
@@ -111,7 +125,19 @@ class MattingEngine:
         rgba = image.copy()
         rgba.putalpha(mask)
 
-        out_dir = os.path.dirname(os.path.abspath(output_path))
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        rgba.save(output_path)
+        matte_dir = os.path.dirname(os.path.abspath(matte_path))
+        mask_dir = os.path.dirname(os.path.abspath(mask_path))
+        if matte_dir:
+            os.makedirs(matte_dir, exist_ok=True)
+        if mask_dir:
+            os.makedirs(mask_dir, exist_ok=True)
+        rgba.save(matte_path)
+        mask.convert("L").save(mask_path)
+
+    def predict_matte(self, input_path: str, output_path: str) -> None:
+        """
+        Backward-compatible wrapper: emit matte and sibling ``*_mask.png``.
+        """
+        stem, _ext = os.path.splitext(os.path.abspath(output_path))
+        mask_path = f"{stem}_mask.png"
+        self.predict_outputs(input_path, output_path, mask_path)

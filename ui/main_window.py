@@ -1,14 +1,15 @@
 import os
+import shutil
 import threading
 import uuid
 
 from PyQt6.QtCore import QThread, QUrl
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import QDialog, QMainWindow, QMessageBox, QStackedWidget
 
-from core.extractor import extract_preview_frames
+from core.model_manager import ModelManager, is_model_missing_error
 from core.material_paths import resolve_material_raster_path
-from core.scanner import scan_directory
 from core.state_manager import StateManager
 from models import (
     Material,
@@ -21,9 +22,11 @@ from ui.pages.export_page import ExportPage
 from ui.pages.home_page import HomePage
 from ui.pages.matting_page import MattingPage, MattingRowStatus
 from ui.pages.materials_page import MaterialsPage
+from ui.pages.model_download_page import ModelDownloadPage
 from ui.widgets.video_frames_modal import VideoFramesModal
 from ui.workers.matting_worker import MattingWorker
 from ui.workers.psd_export_worker import PsdExportWorker
+from ui.workers.scanner_worker import ScannerWorker
 
 
 class MainWindow(QMainWindow):
@@ -33,10 +36,13 @@ class MainWindow(QMainWindow):
         self.resize(800, 600)
 
         self._state_manager = StateManager()
+        self._model_manager = ModelManager()
+        self._cache_dir = os.path.expanduser("~/.folder-poster/cache")
         self._project_state: ProjectState | None = None
         self._materials_page: MaterialsPage | None = None
         self._matting_page: MattingPage | None = None
         self._export_page: ExportPage | None = None
+        self._model_download_page: ModelDownloadPage | None = None
 
         self._matting_thread: QThread | None = None
         self._matting_worker: MattingWorker | None = None
@@ -46,35 +52,62 @@ class MainWindow(QMainWindow):
         self._matting_total: int = 0
         self._matting_cancel_requested: bool = False
         self._matting_any_failure: bool = False
+        self._matting_model_missing: bool = False
 
         self._psd_thread: QThread | None = None
         self._psd_worker: PsdExportWorker | None = None
         self._pending_psd_export_path: str | None = None
+        self._scan_thread: QThread | None = None
+        self._scan_worker: ScannerWorker | None = None
 
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
 
         self.home_page = HomePage(self.handle_start_scan)
         self.stacked_widget.addWidget(self.home_page)
+        self._apply_model_gate()
+
+    def _apply_model_gate(self) -> None:
+        if self._model_manager.is_installed():
+            self.stacked_widget.setCurrentWidget(self.home_page)
+            return
+        self._show_model_download_page()
+
+    def _show_model_download_page(self) -> None:
+        if self._model_download_page is None:
+            self._model_download_page = ModelDownloadPage(self._model_manager, self)
+            self._model_download_page.model_ready.connect(self._on_model_download_ready)
+            self.stacked_widget.addWidget(self._model_download_page)
+        self.stacked_widget.setCurrentWidget(self._model_download_page)
+
+    def _on_model_download_ready(self) -> None:
+        if not self._model_manager.is_installed():
+            if self._model_download_page is not None:
+                QMessageBox.warning(self, "模型检查失败", "模型下载完成，但关键文件缺失，请重试下载。")
+            return
+        self.stacked_widget.setCurrentWidget(self.home_page)
 
     def handle_start_scan(self, path: str, mode: str, depth: int) -> None:
+        if not self._model_manager.is_installed():
+            self._show_model_download_page()
+            return
+
         path = path.strip()
         if not path or not os.path.isdir(path):
             QMessageBox.warning(self, "无效路径", "请选择存在的文件夹路径。")
             return
-
-        files = scan_directory(path, mode, depth)
-        if not files:
-            QMessageBox.warning(self, "无文件", "该文件夹下没有匹配的文件。")
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            QMessageBox.information(self, "请稍候", "正在扫描中…")
             return
 
+        # Enter materials page immediately, then stream scan results asynchronously.
         project_id = uuid.uuid4().hex
         state = ProjectState(
             project_id=project_id,
             input_path=os.path.abspath(path),
             mode=mode,
             depth=depth,
-            scanned_files=files,
+            scanned_files=[],
             current_step="materials",
         )
         self._state_manager.save_state(state)
@@ -89,8 +122,50 @@ class MainWindow(QMainWindow):
             self.stacked_widget.addWidget(self._materials_page)
         else:
             self._materials_page.set_state(state)
-
+        self._materials_page.set_scan_loading(True)
         self.stacked_widget.setCurrentWidget(self._materials_page)
+
+        self.home_page.set_scanning(True)
+        self._scan_thread = QThread(self)
+        self._scan_worker = ScannerWorker(path, mode, depth)
+        self._scan_worker.moveToThread(self._scan_thread)
+        self._scan_thread.started.connect(self._scan_worker.run)
+        self._scan_worker.batch_ready.connect(self._on_scan_batch_ready)
+        self._scan_worker.finished_ok.connect(self._on_scan_finished_ok)
+        self._scan_worker.finished_err.connect(self._on_scan_finished_err)
+        self._scan_worker.finished_ok.connect(self._scan_thread.quit)
+        self._scan_worker.finished_err.connect(self._scan_thread.quit)
+        self._scan_worker.finished_ok.connect(self._scan_worker.deleteLater)
+        self._scan_worker.finished_err.connect(self._scan_worker.deleteLater)
+        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+        self._scan_thread.finished.connect(self._on_scan_thread_finished)
+        self._scan_thread.start()
+
+    def _on_scan_batch_ready(self, files) -> None:
+        if self._project_state is None or self._materials_page is None:
+            return
+        self._materials_page.append_scanned_files(files)
+
+    def _on_scan_finished_ok(self, path: str, mode: str, depth: int, total: int) -> None:
+        if total == 0:
+            QMessageBox.warning(self, "无文件", "该文件夹下没有匹配的文件。")
+            self.stacked_widget.setCurrentWidget(self.home_page)
+            return
+        if self._materials_page is not None:
+            self._materials_page.set_scan_loading(False)
+        if self._project_state is not None:
+            self._state_manager.save_state(self._project_state)
+
+    def _on_scan_finished_err(self, err: str) -> None:
+        QMessageBox.critical(self, "扫描失败", err or "未知错误")
+        if self._materials_page is not None:
+            self._materials_page.set_scan_loading(False)
+        self.stacked_widget.setCurrentWidget(self.home_page)
+
+    def _on_scan_thread_finished(self) -> None:
+        self._scan_thread = None
+        self._scan_worker = None
+        self.home_page.set_scanning(False)
 
     def _on_materials_back(self) -> None:
         self.stacked_widget.setCurrentWidget(self.home_page)
@@ -113,8 +188,6 @@ class MainWindow(QMainWindow):
     def _on_video_pick(self, source_id: str) -> None:
         if self._project_state is None:
             return
-        if getattr(self, "_extractor_thread", None) is not None and self._extractor_thread.isRunning():
-            return
 
         sf = next((f for f in self._project_state.scanned_files if f.source_id == source_id), None)
         if sf is None:
@@ -128,57 +201,15 @@ class MainWindow(QMainWindow):
         )
 
         import glob
-        from PyQt6.QtWidgets import QProgressDialog
-        from PyQt6.QtCore import Qt
 
         existing_frames = sorted(glob.glob(os.path.join(out_dir, "frame_*.png")))
-        if len(existing_frames) == 32:
-            self._show_video_frames_modal(sf, source_id, out_dir, existing_frames)
-            return
-
-        progress = QProgressDialog("正在提取视频预览帧，请稍候...", "取消", 0, 0, self)
-        progress.setWindowTitle("处理中")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setCancelButton(None)
-        progress.show()
-
-        from ui.workers.extractor_worker import ExtractorWorker
-        self._extractor_thread = QThread()
-        self._extractor_worker = ExtractorWorker(sf.path, out_dir, 32)
-        self._extractor_worker.moveToThread(self._extractor_thread)
-
-        def on_ok(paths):
-            progress.close()
-            self._show_video_frames_modal(sf, source_id, out_dir, paths)
-
-        def on_err(err):
-            progress.close()
-            QMessageBox.warning(self, "提取失败", err)
-
-        def on_cleanup():
-            self._extractor_thread = None
-            self._extractor_worker = None
-
-        self._extractor_worker.finished_ok.connect(on_ok)
-        self._extractor_worker.finished_err.connect(on_err)
-        self._extractor_worker.finished_ok.connect(self._extractor_thread.quit)
-        self._extractor_worker.finished_err.connect(self._extractor_thread.quit)
-        self._extractor_worker.finished_ok.connect(self._extractor_worker.deleteLater)
-        self._extractor_worker.finished_err.connect(self._extractor_worker.deleteLater)
-        self._extractor_thread.finished.connect(self._extractor_thread.deleteLater)
-        self._extractor_thread.finished.connect(on_cleanup)
-
-        self._extractor_thread.started.connect(self._extractor_worker.run)
-        
-        # Prevent GC
-        self._extractor_progress = progress
-
-        self._extractor_thread.start()
+        self._show_video_frames_modal(sf, source_id, out_dir, existing_frames)
 
     def _show_video_frames_modal(self, sf, source_id, out_dir, paths) -> None:
-        pm = QPixmap(paths[0])
-        if self._materials_page is not None and not pm.isNull():
-            self._materials_page.set_video_thumbnail(source_id, pm)
+        if paths:
+            pm = QPixmap(paths[0])
+            if self._materials_page is not None and not pm.isNull():
+                self._materials_page.set_video_thumbnail(source_id, pm)
 
         initial_selected_indices = sorted(
             m.frame_idx
@@ -219,6 +250,9 @@ class MainWindow(QMainWindow):
 
     def _on_materials_next(self) -> None:
         if self._project_state is None:
+            return
+        if not self._model_manager.is_installed():
+            self._show_model_download_page()
             return
         selected = [m for m in self._project_state.selected_materials if m.selected]
         if not selected:
@@ -270,16 +304,20 @@ class MainWindow(QMainWindow):
 
         specs = [(d, p, (mat.source_id, mat.frame_idx)) for d, p, mat in row_work]
         self._matting_page = MattingPage(self._project_state, specs, self)
+        self._matting_page.back_requested.connect(self._on_matting_back)
         self._matting_page.cancel_requested.connect(self._on_matting_cancel)
         self._matting_page.retry_all_failed_requested.connect(self._on_retry_all_matting_failed)
+        self._matting_page.next_requested.connect(self._on_matting_next)
         self.stacked_widget.addWidget(self._matting_page)
         self.stacked_widget.setCurrentWidget(self._matting_page)
+        self._matting_page.set_ready_for_next(False)
 
         self._matting_row_data = row_work
         self._matting_total = len(row_work)
         self._matting_records = []
         self._matting_cancel_requested = False
         self._matting_any_failure = False
+        self._matting_model_missing = False
         self._cancel_event = threading.Event()
 
         self._matting_thread = QThread()
@@ -316,7 +354,14 @@ class MainWindow(QMainWindow):
         self._matting_page.set_overall_progress(pct)
         self._matting_page.set_current_label(name, (total - index, total))
 
-    def _on_matting_row_done(self, index: int, matte_path: str, ok: bool, err: str) -> None:
+    def _on_matting_row_done(
+        self,
+        index: int,
+        matte_path: str,
+        mask_path: str,
+        ok: bool,
+        err: str,
+    ) -> None:
         if self._matting_page is None:
             return
         total = self._matting_total
@@ -330,11 +375,16 @@ class MainWindow(QMainWindow):
                         source_id=mat.source_id,
                         source_mtime=mtime,
                         matte_path=matte_path,
+                        mask_path=mask_path,
                         is_active=True,
                     )
                 )
         else:
             self._matting_any_failure = True
+            if is_model_missing_error(err):
+                self._matting_model_missing = True
+                if self._cancel_event is not None:
+                    self._cancel_event.set()
             self._matting_page.set_row_status(index, MattingRowStatus.ERROR, None)
         pct = int(100 * (index + 1) / total) if total else 100
         self._matting_page.set_overall_progress(pct)
@@ -346,7 +396,34 @@ class MainWindow(QMainWindow):
         if self._cancel_event is not None:
             self._cancel_event.set()
 
+    def _on_matting_back(self) -> None:
+        if self._project_state is None:
+            return
+        if self._matting_thread is not None and self._matting_thread.isRunning():
+            QMessageBox.information(self, "处理中", "抠像仍在进行中，请先点击“停止抠像”。")
+            return
+        self._project_state.current_step = "materials"
+        self._state_manager.save_state(self._project_state)
+        if self._materials_page is not None:
+            self._materials_page.set_state(self._project_state)
+            self.stacked_widget.setCurrentWidget(self._materials_page)
+
+    def _on_matting_next(self) -> None:
+        if self._project_state is None:
+            return
+        if self._matting_thread is not None and self._matting_thread.isRunning():
+            return
+        self._project_state.current_step = "export"
+        self._state_manager.save_state(self._project_state)
+        self._ensure_export_page()
+        self.stacked_widget.setCurrentWidget(self._export_page)
+
     def _on_matting_worker_finished(self) -> None:
+        if self._matting_model_missing:
+            QMessageBox.warning(self, "模型不可用", "模型文件缺失或损坏，请先重新下载模型。")
+            self._show_model_download_page()
+            self._matting_worker = None
+            return
         if self._project_state is not None:
             self._project_state.matte_map = list(self._matting_records)
             self._state_manager.save_state(self._project_state)
@@ -365,12 +442,14 @@ class MainWindow(QMainWindow):
             self._state_manager.save_state(self._project_state)
             if self._matting_page is not None:
                 self._matting_page.set_failures_present(True)
-                self._matting_page.set_worker_running(True)
+                self._matting_page.set_worker_running(False)
         elif self._project_state is not None and not self._matting_cancel_requested:
-            self._project_state.current_step = "export"
+            self._project_state.current_step = "matting"
             self._state_manager.save_state(self._project_state)
-            self._ensure_export_page()
-            self.stacked_widget.setCurrentWidget(self._export_page)
+            if self._matting_page is not None:
+                self._matting_page.set_failures_present(False)
+                self._matting_page.set_ready_for_next(True)
+                self._matting_page.set_worker_running(False)
         self._matting_worker = None
 
     def _on_matting_thread_finished(self) -> None:
@@ -403,10 +482,21 @@ class MainWindow(QMainWindow):
         if self._psd_thread is not None and self._psd_thread.isRunning():
             QMessageBox.information(self, "请稍候", "正在导出 PSD…")
             return
+        source_path_by_source_id: dict[str, str] = {}
+        base = self._state_manager.base_dir
+        for m in self._project_state.selected_materials:
+            if not m.selected:
+                continue
+            src_path = resolve_material_raster_path(base, self._project_state, m)
+            if src_path:
+                source_path_by_source_id[m.source_id] = src_path
+        if self._export_page is not None:
+            self._export_page.set_exporting(True)
         self._pending_psd_export_path = path
         self._psd_thread = QThread()
         self._psd_worker = PsdExportWorker(
             self._project_state.matte_map,
+            source_path_by_source_id,
             width,
             height,
             path,
@@ -425,6 +515,8 @@ class MainWindow(QMainWindow):
     def _on_psd_export_ok(self) -> None:
         path = self._pending_psd_export_path
         self._pending_psd_export_path = None
+        if self._export_page is not None:
+            self._export_page.set_exporting(False)
         QMessageBox.information(self, "导出成功", "PSD 已保存。")
         if path:
             folder = os.path.dirname(path)
@@ -432,8 +524,29 @@ class MainWindow(QMainWindow):
 
     def _on_psd_export_err(self, err: str) -> None:
         self._pending_psd_export_path = None
+        if self._export_page is not None:
+            self._export_page.set_exporting(False)
         QMessageBox.critical(self, "导出失败", err)
 
     def _on_psd_thread_finished_export(self) -> None:
         self._psd_thread = None
         self._psd_worker = None
+
+    def _cleanup_runtime_cache(self) -> None:
+        shutil.rmtree(self._cache_dir, ignore_errors=True)
+
+        base_dir = os.path.expanduser(self._state_manager.base_dir)
+        if not os.path.isdir(base_dir):
+            return
+        for name in os.listdir(base_dir):
+            project_dir = os.path.join(base_dir, name)
+            if not os.path.isdir(project_dir):
+                continue
+            for child in ("previews", "mattes"):
+                shutil.rmtree(os.path.join(project_dir, child), ignore_errors=True)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt naming)
+        try:
+            self._cleanup_runtime_cache()
+        finally:
+            super().closeEvent(event)
