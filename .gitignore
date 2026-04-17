@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .venv/
+
+# Runtime model assets
+models/
+*.safetensors
