@@ -7,7 +7,7 @@ from typing import Iterable
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.extractor import (
-    extract_frames_at_slots,
+    extract_frames_at_slots_concurrent,
     get_video_duration_seconds,
     random_timestamps_for_slots,
 )
@@ -25,6 +25,7 @@ class ExtractorWorker(QObject):
         *,
         regenerate: bool = False,
         keep_indices: Iterable[int] | None = None,
+        max_ffmpeg_workers: int = 4,
     ):
         super().__init__()
         self.video_path = video_path
@@ -32,6 +33,7 @@ class ExtractorWorker(QObject):
         self.frame_count = frame_count
         self.regenerate = regenerate
         self.keep_indices = {int(i) for i in (keep_indices or [])}
+        self.max_ffmpeg_workers = max_ffmpeg_workers
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -65,25 +67,39 @@ class ExtractorWorker(QObject):
                     for slot in range(self.frame_count)
                 }
 
-            for slot in sorted(ts_map):
+            slots_to_extract = {
+                slot: ts
+                for slot, ts in ts_map.items()
+                if slot not in self.keep_indices
+            }
+
+            for slot in sorted(self.keep_indices):
                 if self._stop_requested:
                     break
-                if slot in self.keep_indices:
-                    existing = self._emit_existing_frame_if_present(slot)
-                    if existing is not None:
-                        paths.append(existing)
-                    continue
-                generated = extract_frames_at_slots(
+                existing = self._emit_existing_frame_if_present(slot)
+                if existing is not None:
+                    paths.append(existing)
+
+            def _on_frame_done(slot: int, frame_path: str) -> None:
+                if self._stop_requested:
+                    return
+                path = os.path.abspath(frame_path)
+                self.frame_ready.emit(slot, path)
+                paths.append(path)
+
+            if not self._stop_requested:
+                generated = extract_frames_at_slots_concurrent(
                     self.video_path,
                     self.output_dir,
-                    {slot: ts_map[slot]},
+                    slots_to_extract,
                     frame_count=self.frame_count,
+                    max_workers=self.max_ffmpeg_workers,
+                    frame_done=_on_frame_done,
                 )
-                if not generated:
-                    continue
-                frame_path = os.path.abspath(generated[0])
-                self.frame_ready.emit(slot, frame_path)
-                paths.append(frame_path)
+                for frame_path in generated:
+                    path = os.path.abspath(frame_path)
+                    if path not in paths:
+                        paths.append(path)
 
             # Ensure full-slot availability is surfaced for any already-cached slots.
             for slot in range(self.frame_count):

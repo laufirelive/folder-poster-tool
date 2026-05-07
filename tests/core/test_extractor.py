@@ -102,6 +102,82 @@ def test_extract_frames_at_slots_one_ffmpeg_per_slot_with_ss():
             assert by_out[os.path.join(out, "frame_004.png")] == 9.25
 
 
+def test_extract_frames_at_slots_concurrent_limits_workers_and_returns_sorted_paths():
+    _ensure_project_core()
+    from core.extractor import extract_frames_at_slots_concurrent
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vp = os.path.join(tmp, "v.mp4")
+        open(vp, "wb").close()
+        out = os.path.join(tmp, "frames")
+        os.makedirs(out, exist_ok=True)
+
+        slot_map = {3: 9.25, 0: 1.5, 1: 4.0}
+
+        with patch("core.extractor.extract_frames_at_slots") as extract:
+            def _fake_extract(_video, _output, one_slot_map, frame_count):
+                slot = next(iter(one_slot_map))
+                return [os.path.abspath(os.path.join(out, f"frame_{slot + 1:03d}.png"))]
+
+            extract.side_effect = _fake_extract
+
+            paths = extract_frames_at_slots_concurrent(
+                vp,
+                out,
+                slot_map,
+                frame_count=32,
+                max_workers=2,
+            )
+
+        assert paths == [
+            os.path.abspath(os.path.join(out, "frame_001.png")),
+            os.path.abspath(os.path.join(out, "frame_002.png")),
+            os.path.abspath(os.path.join(out, "frame_004.png")),
+        ]
+        assert extract.call_count == 3
+        for call in extract.call_args_list:
+            one_slot_map = call.args[2]
+            assert len(one_slot_map) == 1
+
+
+def test_extract_frames_at_slots_concurrent_reports_each_completed_slot():
+    _ensure_project_core()
+    from core.extractor import extract_frames_at_slots_concurrent
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vp = os.path.join(tmp, "v.mp4")
+        open(vp, "wb").close()
+        out = os.path.join(tmp, "frames")
+        slot_map = {0: 1.5, 2: 7.0}
+        events: list[tuple[int, str]] = []
+
+        with patch("core.extractor.extract_frames_at_slots") as extract:
+            def _fake_extract(_video, _output, one_slot_map, frame_count):
+                slot = next(iter(one_slot_map))
+                return [os.path.abspath(os.path.join(out, f"frame_{slot + 1:03d}.png"))]
+
+            extract.side_effect = _fake_extract
+
+            extract_frames_at_slots_concurrent(
+                vp,
+                out,
+                slot_map,
+                frame_count=32,
+                max_workers=2,
+                frame_done=lambda slot, path: events.append((slot, path)),
+            )
+
+    assert sorted(slot for slot, _path in events) == [0, 2]
+    assert {os.path.basename(path) for _slot, path in events} == {
+        "frame_001.png",
+        "frame_003.png",
+    }
+
+
 def test_regenerate_unselected_slots_skips_kept_indices():
     _ensure_project_core()
     from core.extractor import regenerate_unselected_preview_frames
