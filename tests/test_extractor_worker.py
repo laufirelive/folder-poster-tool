@@ -26,16 +26,19 @@ from ui.workers.extractor_worker import ExtractorWorker
 
 
 @patch("ui.workers.extractor_worker.get_video_duration_seconds", return_value=10.0)
-@patch("ui.workers.extractor_worker.extract_frames_at_slots")
+@patch("ui.workers.extractor_worker.extract_frames_at_slots_concurrent")
 def test_worker_emits_frame_ready_for_each_slot(mock_extract, _mock_duration, tmp_path):
     out_dir = tmp_path / "previews"
 
-    def _fake_extract(_video, output, slot_map, frame_count):
-        slot = next(iter(slot_map))
-        path = out_dir / f"frame_{slot + 1:03d}.png"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x")
-        return [str(path)]
+    def _fake_extract(_video, output, slot_map, frame_count, *, max_workers, frame_done):
+        paths = []
+        for slot in sorted(slot_map):
+            path = out_dir / f"frame_{slot + 1:03d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+            paths.append(str(path))
+            frame_done(slot, str(path))
+        return paths
 
     mock_extract.side_effect = _fake_extract
 
@@ -48,11 +51,13 @@ def test_worker_emits_frame_ready_for_each_slot(mock_extract, _mock_duration, tm
 
     assert [slot for slot, _ in events[:4]] == [0, 1, 2, 3]
     assert len(done_paths) == 4
+    assert mock_extract.call_count == 1
+    assert set(mock_extract.call_args.args[2]) == {0, 1, 2, 3}
 
 
 @patch("ui.workers.extractor_worker.get_video_duration_seconds", return_value=10.0)
 @patch("ui.workers.extractor_worker.random_timestamps_for_slots", return_value={1: 1.0, 3: 3.0})
-@patch("ui.workers.extractor_worker.extract_frames_at_slots")
+@patch("ui.workers.extractor_worker.extract_frames_at_slots_concurrent")
 def test_worker_regenerate_only_unselected_slots(
     mock_extract,
     _mock_ts,
@@ -64,11 +69,14 @@ def test_worker_regenerate_only_unselected_slots(
     keep_path.parent.mkdir(parents=True, exist_ok=True)
     keep_path.write_bytes(b"k")
 
-    def _fake_extract(_video, output, slot_map, frame_count):
-        slot = next(iter(slot_map))
-        path = out_dir / f"frame_{slot + 1:03d}.png"
-        path.write_bytes(b"x")
-        return [str(path)]
+    def _fake_extract(_video, output, slot_map, frame_count, *, max_workers, frame_done):
+        paths = []
+        for slot in sorted(slot_map):
+            path = out_dir / f"frame_{slot + 1:03d}.png"
+            path.write_bytes(b"x")
+            paths.append(str(path))
+            frame_done(slot, str(path))
+        return paths
 
     mock_extract.side_effect = _fake_extract
 
@@ -87,3 +95,5 @@ def test_worker_regenerate_only_unselected_slots(
     assert 1 in events
     assert 3 in events
     assert 0 in events
+    assert mock_extract.call_count == 1
+    assert set(mock_extract.call_args.args[2]) == {1, 3}

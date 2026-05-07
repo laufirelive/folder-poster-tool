@@ -2,7 +2,8 @@ import glob
 import os
 import random
 import subprocess
-from typing import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Iterable, Mapping
 
 
 def get_video_duration_seconds(video_path: str) -> float:
@@ -131,6 +132,53 @@ def extract_frames_at_slots(
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr or "ffmpeg failed")
         written.append(os.path.abspath(out_path))
+    return sorted(written)
+
+
+def extract_frames_at_slots_concurrent(
+    video_path: str,
+    output_dir: str,
+    slot_to_timestamp: Mapping[int, float],
+    frame_count: int = 32,
+    *,
+    max_workers: int = 4,
+    frame_done: Callable[[int, str], None] | None = None,
+) -> list[str]:
+    """
+    Extract specific timestamp slots with bounded ffmpeg concurrency.
+
+    Each slot still uses an independent fast-seek ffmpeg invocation, but multiple
+    slots can run at once. ``frame_done`` is called by the caller thread as
+    completed futures are collected.
+    """
+    if not slot_to_timestamp:
+        return []
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+
+    slots = sorted(slot_to_timestamp)
+    worker_count = min(max_workers, len(slots))
+    written: list[str] = []
+
+    def _extract_one(slot: int) -> tuple[int, str]:
+        paths = extract_frames_at_slots(
+            video_path,
+            output_dir,
+            {slot: slot_to_timestamp[slot]},
+            frame_count=frame_count,
+        )
+        if len(paths) != 1:
+            raise RuntimeError(f"expected one frame for slot {slot}, got {len(paths)}")
+        return slot, os.path.abspath(paths[0])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(_extract_one, slot) for slot in slots]
+        for future in as_completed(futures):
+            slot, path = future.result()
+            if frame_done is not None:
+                frame_done(slot, path)
+            written.append(path)
+
     return sorted(written)
 
 
